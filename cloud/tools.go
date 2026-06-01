@@ -215,24 +215,6 @@ func (tr *ToolRegistry) handlePlayPCM(args map[string]interface{}) (string, erro
 	return "", fmt.Errorf("use Unix socket /tmp/daima_spk.sock instead of MCP for playback")
 }
 
-func (tr *ToolRegistry) handleSayText(args map[string]interface{}) (string, error) {
-	if !tr.robotConnected() {
-		return "", fmt.Errorf("robot not connected")
-	}
-	text := getString(args, "text", "")
-	if text == "" {
-		return "", fmt.Errorf("missing text")
-	}
-	dur := getFloat(args, "duration_scalar", 1.0)
-	pitch := getFloat(args, "pitch_scalar", 0.0)
-
-	resp, err := tr.robot.SayText(text, true, dur, pitch)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("SayText: status=%v state=%v", resp.Status.Code, resp.State), nil
-}
-
 func (tr *ToolRegistry) handleSetVolume(args map[string]interface{}) (string, error) {
 	if !tr.robotConnected() {
 		return "", fmt.Errorf("robot not connected")

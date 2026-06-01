@@ -1,6 +1,5 @@
 /build
-/voskopus
-/oe-logs
-/oe-workdir
+/test_bc/test_bc
+/test_mcp/test_mcp
 *.pb.go
 *.pb.gw.go

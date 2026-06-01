@@ -379,18 +379,6 @@ func isPlaybackCancelled() bool {
 	return err == nil
 }
 
-// SayText makes Vector speak the given text using built-in TTS.
-func (rc *RobotClient) SayText(text string, useVectorVoice bool, durationScalar, pitchScalar float64) (*extint.SayTextResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	return rc.client.SayText(ctx, &extint.SayTextRequest{
-		Text:            text,
-		UseVectorVoice:  useVectorVoice,
-		DurationScalar:  float32(durationScalar),
-		PitchScalar:     float32(pitchScalar),
-	})
-}
-
 // SetMasterVolume sets the robot's master volume level (0-4).
 func (rc *RobotClient) SetMasterVolume(level extint.MasterVolumeLevel) (*extint.MasterVolumeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -398,36 +386,13 @@ func (rc *RobotClient) SetMasterVolume(level extint.MasterVolumeLevel) (*extint.
 	return rc.client.SetMasterVolume(ctx, &extint.MasterVolumeRequest{VolumeLevel: level})
 }
 
-// DriveOnCharger drives the robot onto its charger.
-func (rc *RobotClient) DriveOnCharger() (*extint.DriveOnChargerResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	return rc.client.DriveOnCharger(ctx, &extint.DriveOnChargerRequest{})
-}
-
 // AppIntent sends a high-level intent to the robot (e.g. "intent_system_charger")
 func (rc *RobotClient) AppIntent(intent string) (*extint.AppIntentResponse, error) {
 	return rc.client.AppIntent(context.Background(), &extint.AppIntentRequest{Intent: intent})
 }
 
-// DriveOffCharger drives the robot off its charger.
-func (rc *RobotClient) DriveOffCharger() (*extint.DriveOffChargerResponse, error) {
-	return rc.client.DriveOffCharger(context.Background(), &extint.DriveOffChargerRequest{})
-}
-
-// PlayAnimationTrigger plays a named animation trigger on Vector's face.
-// Common triggers: "WeatherStars01", "WeatherRain01", "WeatherSnow01",
-// "WeatherSunny01", "WeatherThunderstorm01", "Greeting01", "LookUp01".
-func (rc *RobotClient) PlayAnimationTrigger(name string, loops int) (*extint.PlayAnimationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return rc.client.PlayAnimationTrigger(ctx, &extint.PlayAnimationTriggerRequest{
-		AnimationTrigger: &extint.AnimationTrigger{Name: name},
-		Loops:            uint32(loops),
-	})
-}
-
 // PlayAnimation plays a raw animation by filename (e.g. "anim_holiday_hny_fireworks_01").
+// Must have BehaviorControl active (StartForegroundActivity) before calling.
 func (rc *RobotClient) PlayAnimation(name string, loops int) (*extint.PlayAnimationResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

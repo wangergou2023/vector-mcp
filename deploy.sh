@@ -1,23 +1,19 @@
 #!/bin/bash
-
+# Quick deploy: build + push robot-mcp (client-only binary) to robot.
+# Usage: ./deploy.sh <robot-ip>
 set -e
 
-if [[ $1 == "" ]]; then
-	echo "provide ip please"
-	exit 1
-fi
+ROBOT_IP="${1:?用法: $0 <robot-ip>}"
+SSH_KEY="${SSH_KEY:-ssh_root_key}"
 
-if [[ ! -f ssh_root_key ]]; then
-	wget modder.my.to/ssh_root_key
-fi
+echo "=== Build ==="
+cd "$(dirname "$0")/cloud"
+GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -ldflags="-s -w" -o ../build/vic-cloud .
+echo "  vic-cloud $(ls -lh ../build/vic-cloud | awk '{print $5}')"
 
-chmod 600 ssh_root_key
+echo "=== Deploy ==="
+ssh -i "$SSH_KEY" root@$ROBOT_IP "systemctl stop daima; sleep 1"
+scp -i "$SSH_KEY" ../build/vic-cloud root@$ROBOT_IP:/data/daima/bin/robot-mcp
+ssh -i "$SSH_KEY" root@$ROBOT_IP "chmod +x /data/daima/bin/robot-mcp; systemctl start daima; sleep 3; systemctl is-active daima"
 
-ssh -i ssh_root_key root@$1 "systemctl stop anki-robot.target && mount -o rw,remount / && rm -rf /anki/data/assets/cozmo_resources/cloudless && mkdir -p /anki/data/assets/cozmo_resources/cloudless"
-scp -i ssh_root_key build/vic-cloud root@$1:/anki/bin/
-scp -i ssh_root_key build/lib* root@$1:/anki/lib/
-scp -i ssh_root_key extra/cloud.sudoers root@$1:/etc/sudoers.d/cloud
-scp -i ssh_root_key extra/setfreq root@$1:/usr/sbin/
-ssh -i ssh_root_key root@$1 "sed -i \"s/Nice=\-2/Nice=3/g\" /usr/lib/systemd/system/vic-anim.service"
-rsync -e 'ssh -i ssh_root_key' -avr build/en-US root@$1:/anki/data/assets/cozmo_resources/cloudless/
-ssh -i ssh_root_key root@$1 "chmod +rwx /usr/sbin/setfreq && systemctl daemon-reload && sudo -k && systemctl start anki-robot.target"
+echo "=== Done ==="
