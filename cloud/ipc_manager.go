@@ -292,14 +292,7 @@ func (manager *SwitchboardIpcManager) Init() {
 func (manager *SwitchboardIpcManager) handleSwitchboardMessages(msg *gw_clad.SwitchboardResponse) {
 	switch msg.Tag() {
 	case gw_clad.SwitchboardResponseTag_SdkProxyRequest:
-		request := msg.GetSdkProxyRequest()
-		go func() {
-			manager.Write(
-				gw_clad.NewSwitchboardRequestWithSdkProxyResponse(
-					bleProxy.handle(request),
-				),
-			)
-		}()
+		// No BLE proxy available — ignore
 	case gw_clad.SwitchboardResponseTag_ExternalConnectionRequest:
 		manager.Write(gw_clad.NewSwitchboardRequestWithExternalConnectionResponse(
 			&gw_clad.ExternalConnectionResponse{
@@ -308,9 +301,6 @@ func (manager *SwitchboardIpcManager) handleSwitchboardMessages(msg *gw_clad.Swi
 			},
 		))
 	case gw_clad.SwitchboardResponseTag_ClientGuidRefreshRequest:
-		response := make(chan struct{})
-		tokenManager.ForceUpdate(response)
-		<-response
 		manager.Write(gw_clad.NewSwitchboardRequestWithClientGuidRefreshResponse(
 			&gw_clad.ClientGuidRefreshResponse{},
 		))

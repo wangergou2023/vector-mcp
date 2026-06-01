@@ -1,80 +1,26 @@
+// vector-mcp: stripped vic-cloud (gRPC gateway) + MCP server
+// Replaces /anki/bin/vic-cloud. No VOSK, no cloud services.
 package main
 
 import (
-	"bytes"
-	"context"
 	"crypto/rand"
-	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math/big"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/digital-dream-labs/vector-cloud/internal/clad/cloud"
-	"github.com/digital-dream-labs/vector-cloud/internal/cloudproc"
-	"github.com/digital-dream-labs/vector-cloud/internal/config"
-	"github.com/digital-dream-labs/vector-cloud/internal/ipc"
-	"github.com/digital-dream-labs/vector-cloud/internal/jdocs"
 	"github.com/digital-dream-labs/vector-cloud/internal/log"
-	"github.com/digital-dream-labs/vector-cloud/internal/logcollector"
-	"github.com/digital-dream-labs/vector-cloud/internal/robot"
-	"github.com/digital-dream-labs/vector-cloud/internal/token"
-	"github.com/digital-dream-labs/vector-cloud/internal/voice"
-	"github.com/digital-dream-labs/vector-cloud/internal/voice/vtr"
-
-	"github.com/gwatts/rootcerts"
 )
 
-var checkDataFunc func() error // overwritten by platform_linux.go
-var certErrorFunc func() bool  // overwritten by cert_error_dev.go, determines if error should cause exit
-var platformOpts []cloudproc.Option
-
-func getSocketWithRetry(name string, client string) ipc.Conn {
-	for {
-		sock, err := ipc.NewUnixgramClient(name, client)
-		if err != nil {
-			log.Println("Couldn't create socket", name, "- retrying:", err)
-			time.Sleep(5 * time.Second)
-		} else {
-			return sock
-		}
-	}
-}
-
-func getHTTPClient() *http.Client {
-	// Create a HTTP client with given CA cert pool so we can use https on device
-	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs: rootcerts.ServerCertPool(),
-			},
-		},
-	}
-}
-
-func testReader(serv ipc.Server, send voice.MsgSender) {
-	for conn := range serv.NewConns() {
-		go func(conn ipc.Conn) {
-			for {
-				msg := conn.ReadBlock()
-				if msg == nil || len(msg) == 0 {
-					conn.Close()
-					return
-				}
-				var cmsg cloud.Message
-				if err := cmsg.Unpack(bytes.NewBuffer(msg)); err != nil {
-					log.Println("Test reader unpack error:", err)
-					continue
-				}
-				send.Send(&cmsg)
-			}
-		}(conn)
-	}
-}
+const (
+	serverName    = "vector-mcp"
+	serverVersion = "1.0.0"
+)
 
 func randomString() string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -87,131 +33,135 @@ func randomString() string {
 }
 
 func main() {
-	go mainGateway()
-	f, err := os.ReadFile("/run/vic-cloud/perRuntimeToken")
-	if err != nil {
-		token.PerRuntimeToken = randomString()
-		os.WriteFile("/run/vic-cloud/perRuntimeToken", []byte(token.PerRuntimeToken), 0777)
-	} else {
-		token.PerRuntimeToken = string(f)
-	}
-
-	log.Println("Starting up")
-	fmt.Println("loading vosk...")
-	vtr.InitVosk()
-	go vtr.WeatherFetcher()
-	fmt.Println("worked maybe")
-
-	robot.InstallCrashReporter(log.Tag)
-
-	// if we want to error, we should do it after we get socket connections, to make sure
-	// vic-anim is running and able to handle it
-	var tryErrorFunc bool
-	if checkDataFunc != nil {
-		if err := checkDataFunc(); err != nil {
-			log.Println("CLOUD DATA VERIFICATION ERROR:", err)
-			log.Println("(this should not happen on any DVT3 or later robot)")
-			tryErrorFunc = true
-		} else {
-			log.Println("Cloud data verified")
-		}
-	}
-
-	signalHandler()
-
-	// don't yet have control over process startup on DVT2, set these as default
-	test := false
-
-	var verbose bool
-	flag.BoolVar(&verbose, "verbose", false, "enable verbose logging")
-	// var test bool
-	// flag.BoolVar(&test, "test", false, "enable test channel")
-
-	ms := flag.Bool("ms", false, "force microsoft handling on the server end")
-	lex := flag.Bool("lex", false, "force amazon handling on the server end")
-
-	awsRegion := flag.String("region", "us-west-2", "AWS Region")
-
+	clientOnly := flag.Bool("client-only", false, "Run as MCP client only (no gRPC gateway)")
 	flag.Parse()
 
-	micSock := getSocketWithRetry(ipc.GetSocketPath("mic_sock"), "cp_mic")
-	defer micSock.Close()
-	aiSock := getSocketWithRetry(ipc.GetSocketPath("ai_sock"), "cp_ai")
-	defer aiSock.Close()
+	if !*clientOnly {
+		go mainGateway()
+		for i := 0; i < 50; i++ {
+			c, err := net.DialTimeout("tcp", "localhost:443", 100*time.Millisecond)
+			if err == nil { c.Close(); break }
+			time.Sleep(200 * time.Millisecond)
+		}
+		log.Println("vector-mcp: gateway ready, starting MCP")
 
-	// now that we have connection, we can error if necessary
-	if tryErrorFunc && certErrorFunc != nil && certErrorFunc() {
-		return
+		os.MkdirAll("/run/vic-cloud", 0755)
+		if _, err := os.Stat("/run/vic-cloud/perRuntimeToken"); os.IsNotExist(err) {
+			os.WriteFile("/run/vic-cloud/perRuntimeToken", []byte(randomString()), 0644)
+		}
+	} else {
+		log.Println("vector-mcp: client-only mode")
 	}
 
-	// set up test channel if flags say we should
-	var testRecv *voice.Receiver
-	if test {
-		testSock, err := ipc.NewUnixgramServer(ipc.GetSocketPath("cp_test"))
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, syscall.SIGTERM, syscall.SIGINT)
+
+	// Robot client (connects to our own gateway, skip TLS verification since localhost)
+	robot, err := NewRobotClient("localhost:443", "/run/vic-cloud/perRuntimeToken", true)
+	if err != nil {
+		log.Println("Failed to create robot client:", err)
+	}
+	if robot != nil {
+		defer robot.Close()
+		go func() {
+			for {
+				if robot.conn == nil {
+					log.Println("Reconnecting robot client...")
+					if err := robot.ConnectWithRetry(true); err == nil {
+						go robot.eventStreamLoop()
+					}
+				}
+				time.Sleep(10 * time.Second)
+			}
+		}()
+	}
+
+	tools := NewToolRegistry(robot)
+	listenSpeakerSocket(robot)
+	transport := NewTransport()
+	audio := NewAudioSubscriber(transport, robot)
+
+	// MCP lifecycle
+	transport.RegisterHandler("initialize", func(id json.RawMessage, params json.RawMessage) (interface{}, error) {
+		return map[string]interface{}{
+			"protocolVersion": "2025-03-26",
+			"serverInfo": map[string]interface{}{
+				"name":    serverName,
+				"version": serverVersion,
+			},
+			"capabilities": map[string]interface{}{
+				"tools": map[string]interface{}{},
+			},
+			"instructions": "Vector robot control server with MCP tools.",
+		}, nil
+	})
+
+	transport.RegisterHandler("notifications/initialized", func(id json.RawMessage, params json.RawMessage) (interface{}, error) {
+		log.Println("vector-mcp: client initialized")
+		return nil, nil
+	})
+
+	transport.RegisterHandler("tools/list", func(id json.RawMessage, params json.RawMessage) (interface{}, error) {
+		return map[string]interface{}{"tools": allTools()}, nil
+	})
+
+	transport.RegisterHandler("tools/call", func(id json.RawMessage, params json.RawMessage) (interface{}, error) {
+		var callParams struct {
+			Name      string                 `json:"name"`
+			Arguments map[string]interface{} `json:"arguments"`
+		}
+		if err := json.Unmarshal(params, &callParams); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		switch callParams.Name {
+		case "robot_subscribe_audio":
+			return handleSubscribeAudio(audio)
+		case "robot_unsubscribe_audio":
+			return handleUnsubscribeAudio(audio)
+		case "mic_get_direction":
+			return handleMicGetDirection(audio)
+		}
+		handler := tools.Handler(callParams.Name)
+		if handler == nil {
+			return ToolCallResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Unknown tool: %s", callParams.Name)}}, IsError: true}, nil
+		}
+		result, err := handler(callParams.Arguments)
 		if err != nil {
-			log.Println("Server create error:", err)
+			fmt.Fprintf(os.Stderr, "robot-mcp: tool %s error: %v\n", callParams.Name, err)
+			return ToolCallResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Error: %v", err)}}, IsError: true}, nil
 		}
-		defer testSock.Close()
+		fmt.Fprintf(os.Stderr, "robot-mcp: tool %s result: [%s]\n", callParams.Name, result)
+		return ToolCallResult{Content: []ToolContent{{Type: "text", Text: result}}}, nil
+	})
 
-		var testSend voice.MsgIO
-		testSend, testRecv = voice.NewMemPipe()
-		go testReader(testSock, testSend)
-		log.Println("Test channel created")
-	}
-	log.Println("Sockets successfully created")
-
-	voice.SetVerbose(verbose)
-	receiver := voice.NewIpcReceiver(micSock, nil)
-
-	process := &voice.Process{}
-	process.AddReceiver(receiver)
-	if testRecv != nil {
-		process.AddTestReceiver(testRecv)
-	}
-	process.AddIntentWriter(&voice.IPCMsgSender{Conn: aiSock})
-	voiceOpts := []voice.Option{voice.WithChunkMs(120), voice.WithSaveAudio(true)}
-	var options []cloudproc.Option
-	options = append(options, platformOpts...)
-	voiceOpts = append(voiceOpts, voice.WithCompression(false))
-	if *ms {
-		voiceOpts = append(voiceOpts, voice.WithHandler(voice.HandlerMicrosoft))
-	} else if *lex {
-		voiceOpts = append(voiceOpts, voice.WithHandler(voice.HandlerAmazon))
-	}
-
-	if err := config.SetGlobal(""); err != nil {
-		log.Println("Could not load server config! This is not good!:", err)
-		if certErrorFunc != nil && certErrorFunc() {
-			return
+	log.Println("vector-mcp: ready, waiting for MCP client")
+	go func() {
+		if err := transport.Run(); err != nil {
+			log.Println("transport error:", err)
 		}
-	}
+	}()
 
-	options = append(options, cloudproc.WithVoice(process))
-	options = append(options, cloudproc.WithVoiceOptions(voiceOpts...))
-	tokenOpts := []token.Option{token.WithServer()}
-	options = append(options, cloudproc.WithTokenOptions(tokenOpts...))
-	options = append(options, cloudproc.WithJdocs(jdocs.WithServer()))
-
-	logcollectorOpts := []logcollector.Option{logcollector.WithServer()}
-	logcollectorOpts = append(logcollectorOpts, logcollector.WithHTTPClient(getHTTPClient()))
-	logcollectorOpts = append(logcollectorOpts, logcollector.WithS3UrlPrefix(config.Env.LogFiles))
-	logcollectorOpts = append(logcollectorOpts, logcollector.WithAwsRegion(*awsRegion))
-	options = append(options, cloudproc.WithLogCollectorOptions(logcollectorOpts...))
-
-	cloudproc.Run(context.Background(), options...)
-
-	robot.UninstallCrashReporter()
-
-	log.Println("All processes exited, shutting down")
+	<-signalCh
+	log.Println("Received signal, shutting down")
+	audio.Stop()
 }
 
-func signalHandler() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-ch
-		fmt.Println("Received SIGTERM, shutting down immediately")
-		robot.UninstallCrashReporter()
-		os.Exit(0)
-	}()
+func handleSubscribeAudio(audio *AudioSubscriber) (interface{}, error) {
+	if err := audio.Start(); err != nil {
+		return ToolCallResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Failed to subscribe: %v", err)}}, IsError: true}, nil
+	}
+	return ToolCallResult{Content: []ToolContent{{Type: "text", Text: "Subscribed to audio stream."}}}, nil
+}
+
+func handleUnsubscribeAudio(audio *AudioSubscriber) (interface{}, error) {
+	if err := audio.Stop(); err != nil {
+		return ToolCallResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Failed to unsubscribe: %v", err)}}, IsError: true}, nil
+	}
+	return ToolCallResult{Content: []ToolContent{{Type: "text", Text: "Unsubscribed from audio stream."}}}, nil
+}
+
+func handleMicGetDirection(audio *AudioSubscriber) (interface{}, error) {
+	d := audio.GetLatestDirection()
+	return ToolCallResult{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Direction: index=%d degrees=%.0f selectedDirection=%d confidence=%d activeState=%d power=%.4f noiseFloor=%.4f",
+		d.Direction, d.Degrees, d.SelectedDirection, d.Confidence, d.ActiveState, d.LatestPowerValue, d.LatestNoiseFloor)}}}, nil
 }

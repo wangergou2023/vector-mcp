@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -18,8 +19,6 @@ import (
 	"github.com/digital-dream-labs/vector-cloud/internal/log"
 	"github.com/digital-dream-labs/vector-cloud/internal/robot"
 
-	grpcRuntime "github.com/grpc-ecosystem/grpc-gateway/runtime"
-	"golang.org/x/net/context"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -35,20 +34,14 @@ const (
 
 var (
 	robotHostname          string
-	signalHandlerGateway   chan os.Signal
 	demoKeyPair            *tls.Certificate
 	demoCertPool           *x509.CertPool
 	cloudCheckLimiter      *MultiLimiter
 	debugLogLimiter        *MultiLimiter
 	userAuthLimiter        *MultiLimiter
-	switchboardManager     SwitchboardIpcManager
 	engineProtoManager     EngineProtoIpcManager
-	tokenManager           ClientTokenManager
-	bleProxy               BLEProxy
 	numCommandsSentFromSDK uint32
-
-	// TODO: remove clad socket and map when there are no more clad messages being used
-	engineCladManager EngineCladIpcManager
+	engineCladManager      EngineCladIpcManager
 )
 
 func LoggingUnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ interface{}, errOut error) {
@@ -93,47 +86,23 @@ func LoggingStreamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.
 	return handler(srv, ss)
 }
 
-func verboseHandlerFunc(grpcServer *grpc.Server, otherHandler http.Handler) http.Handler {
+func grpcHandlerFunc(grpcServer *grpc.Server) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor == 2 && strings.Contains(r.Header.Get("Content-Type"), "application/grpc") {
-			name, err := checkAuth(w, r) // Note: we only check here because json will forward to grpc, and doesn't need the same auth
-			if err != nil {
-				http.Error(w, grpc.ErrorDesc(err), http.StatusUnauthorized)
-				return
-			}
-			log.Printf("Authorized connection from '%s'\n", name)
-			LogRequest(r, "grpc")
-			wrap := WrappedResponseWriter{w, "grpc"}
-			grpcServer.ServeHTTP(&wrap, r)
-		} else {
-			LogRequest(r, "json")
-			wrap := WrappedResponseWriter{w, "json"}
-			otherHandler.ServeHTTP(&wrap, r)
-		}
-	})
-}
-
-func grpcHandlerFunc(grpcServer *grpc.Server, otherHandler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor == 2 && strings.Contains(r.Header.Get("Content-Type"), "application/grpc") {
-			_, err := checkAuth(w, r) // Note: we only check here because json will forward to grpc, and doesn't need the same auth
+			_, err := checkAuth(w, r)
 			if err != nil {
 				http.Error(w, grpc.ErrorDesc(err), http.StatusUnauthorized)
 				return
 			}
 			grpcServer.ServeHTTP(w, r)
 		} else {
-			otherHandler.ServeHTTP(w, r)
+			http.NotFound(w, r)
 		}
 	})
 }
 
 func cleanExit() {
-	log.Println("Uninstall crash reporter")
-	robot.UninstallCrashReporter()
-
 	log.Println("Closed vic-gateway")
-
 	os.Exit(0)
 }
 
@@ -173,14 +142,6 @@ func mainGateway() {
 	engineProtoManager.Init()
 	defer engineProtoManager.Close()
 
-	if IsOnRobot {
-		switchboardManager.Init()
-		defer switchboardManager.Close()
-
-		tokenManager.Init()
-		defer tokenManager.Close()
-	}
-
 	log.Println("Sockets successfully created")
 
 	cloudCheckLimiter = NewMultiLimiter(
@@ -209,7 +170,6 @@ func mainGateway() {
 		grpc.StreamInterceptor(LoggingStreamInterceptor),
 	)
 	extint.RegisterExternalInterfaceServer(grpcServer, newServer())
-	ctx := context.Background()
 
 	if runtime.GOOS == "darwin" {
 		robotHostname = "Vector-Local"
@@ -223,40 +183,13 @@ func mainGateway() {
 
 	log.Println("Hostname:", robotHostname)
 
-	tlsConf := &tls.Config{
-		ServerName:   robotHostname,
-		Certificates: []tls.Certificate{*demoKeyPair},
-		RootCAs:      demoCertPool,
-	}
-	bleProxy = BLEProxy{
-		Client: &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: tlsConf,
-			},
-		},
-		Address: addr,
-	}
-	bleProxy.initialize(grpcServer.GetServiceInfo())
-	dcreds := credentials.NewTLS(tlsConf)
-	dopts := []grpc.DialOption{grpc.WithTransportCredentials(dcreds)}
-
-	gwmux := grpcRuntime.NewServeMux(grpcRuntime.WithMarshalerOption(grpcRuntime.MIMEWildcard, &grpcRuntime.JSONPb{EmitDefaults: true, OrigName: true, EnumsAsInts: true}))
-	err = extint.RegisterExternalInterfaceHandlerFromEndpoint(ctx, gwmux, addr, dopts)
-	if err != nil {
-		log.Println("Error during RegisterExternalInterfaceHandlerFromEndpoint:", err)
-		os.Exit(1)
-	}
-
 	conn, err := net.Listen("tcp", fmt.Sprintf(":%d", Port))
 	if err != nil {
 		log.Println("Error during Listen:", err)
 		panic(err)
 	}
 
-	handlerFunc := grpcHandlerFunc(grpcServer, gwmux)
-	if logVerbose {
-		handlerFunc = verboseHandlerFunc(grpcServer, gwmux)
-	}
+	handlerFunc := grpcHandlerFunc(grpcServer)
 
 	srv := &http.Server{
 		Addr:    addr,
@@ -269,10 +202,6 @@ func mainGateway() {
 
 	go engineCladManager.ProcessMessages()
 	go engineProtoManager.ProcessMessages()
-	if IsOnRobot {
-		go switchboardManager.ProcessMessages()
-		go tokenManager.StartUpdateListener()
-	}
 
 	log.Println("Listening on Port:", Port)
 	err = srv.Serve(tls.NewListener(conn, srv.TLSConfig))

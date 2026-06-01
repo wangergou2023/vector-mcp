@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io/ioutil"
 	"math/rand"
 	"os"
@@ -14,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	cloud_clad "github.com/digital-dream-labs/vector-cloud/internal/clad/cloud"
 	gw_clad "github.com/digital-dream-labs/vector-cloud/internal/clad/gateway"
 	extint "github.com/digital-dream-labs/vector-cloud/internal/proto/external_interface"
 
@@ -1014,7 +1012,7 @@ func checkFilters(event *extint.Event, whiteList, blackList *extint.FilterList) 
 func (service *rpcService) onConnect(id string) {
 	// Call DAS WiFi connection event to indicate start of a WiFi connection.
 	// Log the connection id for the primary connection, which is the first person to connect.
-	log.Das("wifi_conn_id.start", (&log.DasFields{}).SetStrings(id))
+	log.Println("wifi_conn_id.start")
 }
 
 // Should be called on WiFi disconnect.
@@ -1022,7 +1020,7 @@ func (service *rpcService) onDisconnect() {
 	// Message engine that app disconnected
 	SendAppDisconnected()
 	// Call DAS WiFi connection event to indicate stop of a WiFi connection
-	log.Das("wifi_conn_id.stop", (&log.DasFields{}).SetStrings(""))
+	log.Println("wifi_conn_id.stop")
 	connectionId = ""
 }
 
@@ -1033,39 +1031,18 @@ func (service *rpcService) checkConnectionID(id string) bool {
 		log.Println("Connection id already set: current='%s', incoming='%s'", connectionId, id)
 		return false
 	}
-	// Check whether we are in Webots.
-	if IsOnRobot {
-		f, responseChan := switchboardManager.CreateChannel(gw_clad.SwitchboardResponseTag_ExternalConnectionResponse, 1)
-		defer f()
-		switchboardManager.Write(gw_clad.NewSwitchboardRequestWithExternalConnectionRequest(&gw_clad.ExternalConnectionRequest{}))
-
-		response, ok := <-responseChan
-		if !ok {
-			log.Println("Failed to receive ConnectionID response from vic-switchboard")
-			return false
-		}
-		connectionResponse := response.GetExternalConnectionResponse()
-
-		// IsConnected shows whether switchboard is connected over ble.
-		// Detect if someone else is connected.
-		if connectionResponse.IsConnected && connectionResponse.ConnectionId != id {
-			// Someone is connected over BLE and they are not the primary connection.
-			// We return false so the app can tell you not to connect.
-			log.Printf("Detected mismatched BLE connection id: BLE='%s', incoming='%s'\n", connectionResponse.ConnectionId, id)
-			return false
-		}
-	}
+	// No connection check without switchboard — always allow
 	connectionId = id
 	return true
 }
 
 // SDK-only message to pass version info for device OS, Python version, etc.
 func (service *rpcService) SDKInitialization(ctx context.Context, in *extint.SDKInitializationRequest) (*extint.SDKInitializationResponse, error) {
-	log.Das("sdk.module_version", (&log.DasFields{}).SetStrings(in.SdkModuleVersion))
-	log.Das("sdk.python_version", (&log.DasFields{}).SetStrings(in.PythonVersion))
-	log.Das("sdk.python_implementation", (&log.DasFields{}).SetStrings(in.PythonImplementation))
-	log.Das("sdk.os_version", (&log.DasFields{}).SetStrings(in.OsVersion))
-	log.Das("sdk.cpu_version", (&log.DasFields{}).SetStrings(in.CpuVersion))
+	log.Println("sdk.module_version")
+	log.Println("sdk.python_version")
+	log.Println("sdk.python_implementation")
+	log.Println("sdk.os_version")
+	log.Println("sdk.cpu_version")
 
 	return &extint.SDKInitializationResponse{
 		Status: &extint.ResponseStatus{
@@ -1259,15 +1236,12 @@ func (service *rpcService) BehaviorControlResponseHandler(out extint.ExternalInt
 
 // SDK-only method. SDK DAS connect/disconnect events are sent from here.
 func (service *rpcService) BehaviorControl(bidirectionalStream extint.ExternalInterface_BehaviorControlServer) error {
-	sdkStartTime := time.Now()
-
 	numCommandsSentFromSDK = 0
 
-	log.Das("sdk.connection_started", (&log.DasFields{}).SetStrings(""))
+	log.Println("sdk.connection_started")
 
 	defer func() {
-		sdkElapsedSeconds := time.Since(sdkStartTime)
-		log.Das("sdk.connection_ended", (&log.DasFields{}).SetStrings(sdkElapsedSeconds.String(), fmt.Sprint(numCommandsSentFromSDK)))
+		log.Println("sdk.connection_ended")
 		numCommandsSentFromSDK = 0
 	}()
 
@@ -1898,44 +1872,14 @@ func (service *rpcService) UserAuthentication(ctx context.Context, in *extint.Us
 		return nil, grpc.Errorf(codes.ResourceExhausted, "Maximum auth rate exceeded. Please wait and try again later.")
 	}
 
-	f, authChan := switchboardManager.CreateChannel(gw_clad.SwitchboardResponseTag_AuthResponse, 1)
-	defer f()
-
-	// cap ClientName to 64-characters
-	clientName := string(in.ClientName)
-	if len(clientName) > 64 {
-		clientName = clientName[:64]
-	}
-
-	switchboardManager.Write(gw_clad.NewSwitchboardRequestWithAuthRequest(&cloud_clad.AuthRequest{
-		SessionToken: string(in.UserSessionId),
-		ClientName:   clientName,
-		AppId:        "SDK",
-	}))
-	response, ok := <-authChan
-	if !ok {
-		return nil, grpc.Errorf(codes.Internal, "Failed to retrieve message")
-	}
-	auth := response.GetAuthResponse()
-	code := extint.UserAuthenticationResponse_UNAUTHORIZED
-	token := auth.AppToken
-	if auth.Error == cloud_clad.TokenError_NoError {
-		code = extint.UserAuthenticationResponse_AUTHORIZED
-
-		// Force an update of the tokens
-		response := make(chan struct{})
-		tokenManager.ForceUpdate(response)
-		<-response
-		log.Das("sdk.activate", &log.DasFields{})
-	} else {
-		token = ""
-	}
+	// Always authorize (no switchboard available)
+	code := extint.UserAuthenticationResponse_AUTHORIZED
 	return &extint.UserAuthenticationResponse{
 		Status: &extint.ResponseStatus{
 			Code: extint.ResponseStatus_RESPONSE_RECEIVED,
 		},
 		Code:            code,
-		ClientTokenGuid: []byte(token),
+		ClientTokenGuid: []byte{},
 	}, nil
 }
 
