@@ -49,22 +49,22 @@ func (t tokenAuth) GetRequestMetadata(ctx context.Context, uri ...string) (map[s
 
 func (tokenAuth) RequireTransportSecurity() bool { return true }
 
-// NewRobotClient creates a new robot client.
-// target: "host:port" (e.g. "localhost:443" or "192.168.1.100:443")
-// tokenPath: path to the per-runtime token file (e.g. "/run/vic-cloud/perRuntimeToken")
-// insecure: if true, skip TLS cert verification
+// NewRobotClient creates a new robot client from a token file path.
 func NewRobotClient(target string, tokenPath string, skipVerify bool) (*RobotClient, error) {
 	token, err := os.ReadFile(tokenPath)
 	if err != nil {
 		return nil, fmt.Errorf("read token file %s: %w", tokenPath, err)
 	}
+	return NewRobotClientWithToken(target, string(token), skipVerify)
+}
 
+// NewRobotClientWithToken creates a new robot client with a raw token string.
+func NewRobotClientWithToken(target string, token string, skipVerify bool) (*RobotClient, error) {
 	rc := &RobotClient{
 		target: target,
-		token:  string(token),
+		token:  token,
 	}
 
-	// Try initial connection; if it fails, return client anyway (caller can retry)
 	if err := rc.connect(skipVerify); err != nil {
 		fmt.Fprintf(os.Stderr, "robot-mcp: initial connect failed: %v (will retry)\n", err)
 	}

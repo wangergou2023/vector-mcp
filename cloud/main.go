@@ -56,8 +56,12 @@ func main() {
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, syscall.SIGTERM, syscall.SIGINT)
 
-	// Robot client (connects to our own gateway, skip TLS verification since localhost)
-	robot, err := NewRobotClient("localhost:443", "/run/vic-cloud/perRuntimeToken", true)
+	// Robot client — token may not exist if run as cloud user, fall back to random
+	tokenStr := ""
+	if data, err := os.ReadFile("/run/vic-cloud/perRuntimeToken"); err == nil {
+		tokenStr = string(data)
+	}
+	robot, err := NewRobotClientWithToken("localhost:443", tokenStr, true)
 	if err != nil {
 		log.Println("Failed to create robot client:", err)
 	}
