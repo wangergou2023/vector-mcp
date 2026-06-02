@@ -39,6 +39,7 @@ var (
 	cloudCheckLimiter      *MultiLimiter
 	debugLogLimiter        *MultiLimiter
 	userAuthLimiter        *MultiLimiter
+	switchboardManager     SwitchboardIpcManager
 	engineProtoManager     EngineProtoIpcManager
 	numCommandsSentFromSDK uint32
 	engineCladManager      EngineCladIpcManager
@@ -141,6 +142,16 @@ func mainGateway() {
 
 	engineProtoManager.Init()
 	defer engineProtoManager.Close()
+
+	// Start switchboard to respond to engine's ExternalConnectionRequest.
+	// Without this, engine shows "cloud disconnected" icon.
+	go func() {
+		switchboardManager.Init()
+		defer switchboardManager.Close()
+		log.Println("switchboard: connected, handling messages")
+		switchboardManager.ProcessMessages()
+		log.Println("switchboard: ProcessMessages exited")
+	}()
 
 	log.Println("Sockets successfully created")
 

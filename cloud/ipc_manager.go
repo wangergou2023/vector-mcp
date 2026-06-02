@@ -294,10 +294,11 @@ func (manager *SwitchboardIpcManager) handleSwitchboardMessages(msg *gw_clad.Swi
 	case gw_clad.SwitchboardResponseTag_SdkProxyRequest:
 		// No BLE proxy available — ignore
 	case gw_clad.SwitchboardResponseTag_ExternalConnectionRequest:
+		log.Println("switchboard: ExternalConnectionRequest → IsConnected=true")
 		manager.Write(gw_clad.NewSwitchboardRequestWithExternalConnectionResponse(
 			&gw_clad.ExternalConnectionResponse{
-				IsConnected:  len(connectionId) != 0,
-				ConnectionId: connectionId,
+				IsConnected:  true,
+				ConnectionId: "daima",
 			},
 		))
 	case gw_clad.SwitchboardResponseTag_ClientGuidRefreshRequest:

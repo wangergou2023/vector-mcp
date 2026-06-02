@@ -28,8 +28,11 @@ type RobotClient struct {
 	bcStream extint.ExternalInterface_BehaviorControlClient
 	bcCancel context.CancelFunc
 
-	sensorMu  sync.RWMutex
+	sensorMu   sync.RWMutex
 	robotState *extint.RobotState
+
+	animMu      sync.Mutex
+	animStop    chan struct{}
 }
 
 func (rc *RobotClient) bgCtx() context.Context {
@@ -392,14 +395,40 @@ func (rc *RobotClient) AppIntent(intent string) (*extint.AppIntentResponse, erro
 }
 
 // PlayAnimation plays a raw animation by filename (e.g. "anim_holiday_hny_fireworks_01").
-// Must have BehaviorControl active (StartForegroundActivity) before calling.
 func (rc *RobotClient) PlayAnimation(name string, loops int) (*extint.PlayAnimationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return rc.client.PlayAnimation(ctx, &extint.PlayAnimationRequest{
 		Animation: &extint.Animation{Name: name},
 		Loops:     uint32(loops),
 	})
+}
+
+// PlayAnimationCancelPrev cancels any in-progress animation, then plays the new one.
+// Returns immediately; BC is held in background for duration.
+func (rc *RobotClient) PlayAnimationCancelPrev(name string, loops int) error {
+	rc.animMu.Lock()
+	if rc.animStop != nil {
+		close(rc.animStop)
+	}
+	rc.animStop = make(chan struct{})
+	stop := rc.animStop
+	rc.animMu.Unlock()
+
+	go func() {
+		if err := rc.StartForegroundActivity(); err != nil {
+			return
+		}
+		defer rc.StopForegroundActivity()
+
+		rc.PlayAnimation(name, loops)
+
+		select {
+		case <-stop:
+		case <-time.After(10 * time.Second):
+		}
+	}()
+	return nil
 }
 
 // StartForegroundActivity requests behavior control with DEFAULT priority.

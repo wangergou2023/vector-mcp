@@ -287,16 +287,10 @@ func (tr *ToolRegistry) handlePlayAnimation(args map[string]interface{}) (string
 		animName = "anim_meetvictor_sayname_01"
 	}
 
-	if err := tr.robot.StartForegroundActivity(); err != nil {
+	if err := tr.robot.PlayAnimationCancelPrev(animName, loops); err != nil {
 		return "", err
 	}
-	defer tr.robot.StopForegroundActivity()
-
-	resp, err := tr.robot.PlayAnimation(animName, loops)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("PlayAnimation %s: status=%v", animName, resp.Status.Code), nil
+	return fmt.Sprintf("PlayAnimation %s: playing", animName), nil
 }
 
 func (tr *ToolRegistry) handleCancelPlayback(args map[string]interface{}) (string, error) {

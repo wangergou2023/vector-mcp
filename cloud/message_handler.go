@@ -561,9 +561,6 @@ func (service *rpcService) DriveWheels(ctx context.Context, in *extint.DriveWhee
 // PlayAnimationTrigger intentionally waits for PlayAnimationResponse (not something like PlayAnimationTriggerResponse), because
 // in the end, the engine is playing an animation.
 func (service *rpcService) PlayAnimationTrigger(ctx context.Context, in *extint.PlayAnimationTriggerRequest) (*extint.PlayAnimationResponse, error) {
-	f, animResponseChan := engineProtoManager.CreateChannel(&extint.GatewayWrapper_PlayAnimationResponse{}, 1)
-	defer f()
-
 	message := &extint.GatewayWrapper{
 		OneofMessageType: &extint.GatewayWrapper_PlayAnimationTriggerRequest{
 			PlayAnimationTriggerRequest: in,
@@ -573,22 +570,14 @@ func (service *rpcService) PlayAnimationTrigger(ctx context.Context, in *extint.
 	if err != nil {
 		return nil, err
 	}
-
-	setPlayAnimationResponse, ok := <-animResponseChan
-	if !ok {
-		return nil, grpc.Errorf(codes.Internal, "Failed to retrieve message")
-	}
-	response := setPlayAnimationResponse.GetPlayAnimationResponse()
-	response.Status = &extint.ResponseStatus{
-		Code: extint.ResponseStatus_RESPONSE_RECEIVED,
-	}
-	return response, nil
+	return &extint.PlayAnimationResponse{
+		Status: &extint.ResponseStatus{
+			Code: extint.ResponseStatus_RESPONSE_RECEIVED,
+		},
+	}, nil
 }
 
 func (service *rpcService) PlayAnimation(ctx context.Context, in *extint.PlayAnimationRequest) (*extint.PlayAnimationResponse, error) {
-	f, animResponseChan := engineProtoManager.CreateChannel(&extint.GatewayWrapper_PlayAnimationResponse{}, 1)
-	defer f()
-
 	message := &extint.GatewayWrapper{
 		OneofMessageType: &extint.GatewayWrapper_PlayAnimationRequest{
 			PlayAnimationRequest: in,
@@ -598,16 +587,11 @@ func (service *rpcService) PlayAnimation(ctx context.Context, in *extint.PlayAni
 	if err != nil {
 		return nil, err
 	}
-
-	setPlayAnimationResponse, ok := <-animResponseChan
-	if !ok {
-		return nil, grpc.Errorf(codes.Internal, "Failed to retrieve message")
-	}
-	response := setPlayAnimationResponse.GetPlayAnimationResponse()
-	response.Status = &extint.ResponseStatus{
-		Code: extint.ResponseStatus_RESPONSE_RECEIVED,
-	}
-	return response, nil
+	return &extint.PlayAnimationResponse{
+		Status: &extint.ResponseStatus{
+			Code: extint.ResponseStatus_RESPONSE_RECEIVED,
+		},
+	}, nil
 }
 
 func (service *rpcService) ListAnimations(ctx context.Context, in *extint.ListAnimationsRequest) (*extint.ListAnimationsResponse, error) {
